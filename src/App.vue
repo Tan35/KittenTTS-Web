@@ -1,13 +1,10 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import {
-  DownloadIcon,
   PauseIcon,
   PlayIcon,
   CopyIcon,
   CheckIcon,
-  GithubIcon,
-  ExternalLinkIcon,
   Heart
 } from 'lucide-vue-next';
 import TextStatistics from './components/TextStatistics.vue';
@@ -17,6 +14,8 @@ import SampleRateSelector from './components/SampleRateSelector.vue';
 import ThemeToggle from './components/ThemeToggle.vue';
 import WebGPUToggle from './components/WebGPUToggle.vue';
 import AudioChunk from './components/AudioChunk.vue';
+import ModelManager from './components/ModelManager.vue';
+import { cacheModel, clearModelCache, isModelCached } from './utils/model-cache.js';
 
 // State variables
 const text = ref(
@@ -27,7 +26,7 @@ const isPlaying = ref(false);
 const currentChunkIndex = ref(-1);
 const speed = ref(1);
 const copied = ref(false);
-const status = ref("loading");
+const status = ref("idle"); // idle, downloading, loading, ready, generating, error
 const error = ref(null);
 const worker = ref(null);
 const voices = ref(null);
@@ -37,6 +36,8 @@ const useWebGPU = ref(false);
 const actualDevice = ref("wasm");
 const chunks = ref([]);
 const result = ref(null);
+const currentModelUrl = ref('https://huggingface.co/KittenML/kitten-tts-nano-0.1/resolve/main/kitten_tts_nano_v0_1.onnx');
+const downloadProgress = ref(0);
 
 // Computed properties
 const processed = computed(() => {
@@ -45,6 +46,33 @@ const processed = computed(() => {
       lastGeneration.value.speed === speed.value &&
       lastGeneration.value.voice === selectedVoice.value &&
       lastGeneration.value.sampleRate === selectedSampleRate.value;
+});
+
+const audioUrl = computed(() => {
+  if (!result.value) return '';
+  try {
+    return URL.createObjectURL(result.value);
+  } catch (error) {
+    console.error('Failed to create object URL:', error);
+    return '';
+  }
+});
+
+// Keep track of previous URL for cleanup
+let previousAudioUrl = null;
+
+// Watch for result changes to clean up old URLs
+watch(result, (newResult, oldResult) => {
+  if (previousAudioUrl) {
+    try {
+      URL.revokeObjectURL(previousAudioUrl);
+    } catch (error) {
+      console.error('Failed to revoke previous object URL:', error);
+    }
+  }
+  if (newResult && audioUrl.value) {
+    previousAudioUrl = audioUrl.value;
+  }
 });
 
 // Methods
@@ -68,7 +96,49 @@ const handleWebGPUToggle = (enabled) => {
   }
 };
 
-const restartWorker = (webGPUPreference = false) => {
+const handleDownloadModel = async (modelUrl) => {
+  try {
+    status.value = "downloading";
+    downloadProgress.value = 0;
+    error.value = null;
+    
+    await cacheModel(modelUrl, (progress) => {
+      downloadProgress.value = progress;
+    });
+    
+    currentModelUrl.value = modelUrl;
+    
+    // Initialize the worker with the new model
+    restartWorker(useWebGPU.value, modelUrl);
+    
+    downloadProgress.value = 100;
+  } catch (err) {
+    console.error('Failed to download model:', err);
+    status.value = "error";
+    error.value = err.message;
+  }
+};
+
+const handleClearCache = async () => {
+  try {
+    await clearModelCache();
+    status.value = "idle";
+    voices.value = null;
+    result.value = null;
+    chunks.value = [];
+    lastGeneration.value = null;
+    
+    if (worker.value) {
+      worker.value.terminate();
+      worker.value = null;
+    }
+  } catch (err) {
+    console.error('Failed to clear cache:', err);
+    error.value = err.message;
+  }
+};
+
+const restartWorker = (webGPUPreference = false, modelUrl = null) => {
   if (worker.value) {
     worker.value.terminate();
   }
@@ -89,10 +159,11 @@ const restartWorker = (webGPUPreference = false) => {
   worker.value.addEventListener("message", onMessageReceived);
   worker.value.addEventListener("error", onErrorReceived);
   
-  // Always send init message with device preference
+  // Always send init message with device preference and model URL
   worker.value.postMessage({ 
     type: 'init', 
-    useWebGPU: webGPUPreference 
+    useWebGPU: webGPUPreference,
+    modelUrl: modelUrl || currentModelUrl.value
   });
 };
 
@@ -114,10 +185,16 @@ const handleChunkEnd = () => {
 };
 
 const handlePlayPause = () => {
-  if (!isPlaying.value && status.value === "ready" && !processed.value) {
+  // Don't do anything if model is not ready
+  if (status.value !== "ready") {
+    return;
+  }
+
+  // If we need to generate first
+  if (!processed.value && status.value === "ready") {
     status.value = "generating";
     chunks.value = [];
-    currentChunkIndex.value = 0;
+    currentChunkIndex.value = -1;  // Don't auto-play
     const params = { 
       text: text.value, 
       voice: selectedVoice.value, 
@@ -126,22 +203,17 @@ const handlePlayPause = () => {
     };
     lastGeneration.value = params;
     worker.value?.postMessage(params);
+    return;
   }
-  if (currentChunkIndex.value === -1) {
-    currentChunkIndex.value = 0;
-  }
-  isPlaying.value = !isPlaying.value;
-};
 
-const downloadAudio = () => {
-  if (!result.value) return;
-  const url = URL.createObjectURL(result.value);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "audio.wav";
-  link.click();
-  URL.revokeObjectURL(url);
-}
+  // If audio is already generated, handle play/pause
+  if (processed.value && status.value === "ready") {
+    if (currentChunkIndex.value === -1) {
+      currentChunkIndex.value = 0;
+    }
+    isPlaying.value = !isPlaying.value;
+  }
+};
 
 const handleCopy = async () => {
   await navigator.clipboard.writeText(text.value);
@@ -184,8 +256,14 @@ const onErrorReceived = (e) => {
 };
 
 // Worker setup
-onMounted(() => {
-  restartWorker();
+onMounted(async () => {
+  // Check if model is already cached
+  const isCached = await isModelCached(currentModelUrl.value);
+  if (isCached) {
+    restartWorker(useWebGPU.value, currentModelUrl.value);
+  } else {
+    status.value = "idle";
+  }
 });
 
 // Cleanup
@@ -193,18 +271,25 @@ onUnmounted(() => {
   if (worker.value) {
     worker.value.terminate();
   }
+  // Clean up audio URL
+  if (previousAudioUrl) {
+    try {
+      URL.revokeObjectURL(previousAudioUrl);
+    } catch (error) {
+      console.error('Failed to revoke object URL on unmount:', error);
+    }
+  }
 });
 </script>
 
 <template>
-  <div class="min-h-screen bg-gradient-to-br from-purple-50 via-pink-50 to-indigo-100 dark:from-gray-900 dark:via-purple-900/20 dark:to-gray-800 transition-colors duration-300">
+  <div class="min-h-screen bg-background transition-all duration-300 ease-in-out flex flex-col">
     <!-- Header -->
-    <header class="sticky top-0 z-50 backdrop-blur-xl bg-white/80 dark:bg-gray-900/80 border-b border-gray-200/50 dark:border-gray-700/50">
+    <header class="sticky top-0 z-50 backdrop-blur-xl bg-card/80 border-b border-border">
       <div class="container mx-auto px-4 py-4 flex items-center justify-between">
         <div class="flex items-center gap-3">
-          <div class="text-3xl">😻</div>
           <div>
-            <h1 class="text-xl font-bold bg-gradient-to-r text-blue-800 dark:text-blue-500">
+            <h1 class="text-xl font-bold text-foreground">
               Kitten TTS Nano Demo
             </h1>
             <p class="text-sm text-muted-foreground hidden sm:block">Local text-to-speech in your browser</p>
@@ -212,24 +297,24 @@ onUnmounted(() => {
         </div>
         
         <div class="flex items-center gap-3">
-          <a 
-            href="https://github.com/clowerweb/kitten-tts-web-demo" 
-            target="_blank"
-            class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors"
-          >
-            <GithubIcon class="w-4 h-4" />
-            <span class="hidden sm:inline">GitHub</span>
-            <ExternalLinkIcon class="w-3 h-3" />
-          </a>
           <ThemeToggle />
         </div>
       </div>
     </header>
 
     <!-- Main Content -->
-    <main class="container mx-auto px-4 pt-8 pb-4 max-w-4xl">
+    <main class="container mx-auto px-4 pt-8 pb-4 max-w-4xl flex-1">
+      <!-- Model Management Section -->
+      <div class="mb-6">
+        <ModelManager 
+          :status="status"
+          @download-model="handleDownloadModel"
+          @clear-cache="handleClearCache"
+        />
+      </div>
+
       <!-- Main Card -->
-      <div class="bg-white/70 dark:bg-gray-900/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden">
+      <div class="bg-card backdrop-blur-xl rounded-2xl shadow-lg border border-border overflow-hidden">
         <div class="p-6 pb-0 space-y-6">
           <!-- Text Input Section -->
           <div class="space-y-4">
@@ -237,15 +322,16 @@ onUnmounted(() => {
               <textarea
                 v-model="text"
                 placeholder="Type or paste your text here..."
-                class="w-full min-h-[180px] text-lg leading-relaxed resize-y p-4 pt-8 rounded-xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:border-purple-500 dark:focus:border-purple-400 focus:ring-0 transition-colors"
+                :disabled="status === 'loading' || status === 'generating'"
+                class="w-full min-h-[180px] text-lg leading-relaxed resize-y p-4 pt-8 rounded-xl border-2 border-border bg-input focus:border-primary focus:ring-0 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 :class="voices ? '' : 'text-muted-foreground'"
               ></textarea>
               <button
-                class="absolute top-1 right-3 h-10 w-10 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center transition-colors"
+                class="absolute top-1 right-3 h-10 w-10 rounded-full hover:bg-accent flex items-center justify-center transition-colors"
                 @click="handleCopy"
                 :title="copied ? 'Copied!' : 'Copy text'"
               >
-                <CheckIcon v-if="copied" class="h-4 w-4 text-green-500" />
+                <CheckIcon v-if="copied" class="h-4 w-4 text-primary" />
                 <CopyIcon v-else class="h-4 w-4 text-muted-foreground" />
               </button>
             </div>
@@ -260,12 +346,13 @@ onUnmounted(() => {
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
               <!-- Voice Selection -->
               <div class="flex items-center">
-                <label class="text-sm font-medium text-gray-700 dark:text-gray-300 mr-2">
+                <label class="text-sm font-medium text-foreground mr-2">
                   Voice:
                 </label>
                 <VoiceSelector
                   :voices="voices"
                   :selected-voice="selectedVoice"
+                  :disabled="status !== 'ready'"
                   @voice-change="setSelectedVoice"
                 />
               </div>
@@ -274,6 +361,7 @@ onUnmounted(() => {
               <div class="flex items-center">
                 <SpeedControl
                   :speed="speed"
+                  :disabled="status !== 'ready'"
                   @speed-change="setSpeed"
                 />
               </div>
@@ -281,48 +369,82 @@ onUnmounted(() => {
               <!-- Sample Rate -->
               <div class="flex items-center">
                 <SampleRateSelector
+                  :disabled="status !== 'ready'"
                   @sample-rate-change="setSampleRate"
                 />
               </div>
             </div>
 
             <!-- WebGPU Toggle -->
-            <WebGPUToggle v-model="useWebGPU" @update:modelValue="handleWebGPUToggle" />
+            <WebGPUToggle 
+              v-model="useWebGPU" 
+              :disabled="status !== 'ready'"
+              @update:modelValue="handleWebGPUToggle" 
+            />
           </div>
 
-          <div v-else-if="error" class="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg text-sm">
+          <div v-else-if="error" class="p-3 bg-destructive/10 text-destructive rounded-lg text-sm">
             {{ error }}
           </div>
-          <div v-else class="flex items-center gap-2 text-muted-foreground">
-            <div class="animate-spin w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full"></div>
+          <div v-else-if="status === 'downloading'" class="flex items-center gap-2 text-blue-600">
+            <div class="animate-spin w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+            <span>Downloading model... {{ Math.round(downloadProgress) }}%</span>
+          </div>
+          <div v-else-if="status === 'loading'" class="flex items-center gap-2 text-muted-foreground">
+            <div class="animate-spin w-4 h-4 border-2 border-primary border-t-transparent rounded-full"></div>
             <span>Loading model...</span>
+          </div>
+          <div v-else-if="status === 'idle'" class="p-3 bg-orange-100 dark:bg-orange-900/20 text-orange-700 dark:text-orange-300 rounded-lg text-sm">
+            Please download a model first to use TTS functionality.
           </div>
 
           <!-- Action Buttons -->
           <div class="flex flex-col sm:flex-row gap-3">
             <button
-              class="flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:scale-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold text-primary-foreground transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:scale-100 disabled:opacity-50 disabled:cursor-not-allowed"
               :class="{
-                'bg-gradient-to-r from-orange-500 to-orange-700 hover:from-orange-600 hover:to-orange-800 shadow-lg shadow-orange-500/25': isPlaying,
-                'bg-blue-800 shadow-lg': !isPlaying
+                'bg-primary hover:bg-primary/90 shadow-lg': !isPlaying && status === 'ready',
+                'bg-red-500 hover:bg-red-600 shadow-lg': isPlaying && status === 'ready',
+                'bg-muted/50': status !== 'ready',
+                'animate-pulse': status === 'generating'
               }"
               @click="handlePlayPause"
-              :disabled="(status === 'ready' && !isPlaying && !text) || (status !== 'ready' && chunks.length === 0)"
+              :disabled="!text || status !== 'ready'"
             >
-              <PauseIcon v-if="isPlaying" class="w-5 h-5" />
+              <!-- Loading spinner for generating state -->
+              <svg v-if="status === 'generating'" class="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="m4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <PauseIcon v-else-if="isPlaying" class="w-5 h-5" />
               <PlayIcon v-else class="w-5 h-5" />
-              <span v-if="isPlaying">Pause</span>
-              <span v-else>{{ processed || status === 'generating' ? 'Play' : 'Generate' }}</span>
+              <span v-if="status === 'idle'" class="text-gray-500">Download Model First</span>
+              <span v-else-if="status === 'downloading'" class="text-gray-500">Downloading...</span>
+              <span v-else-if="status === 'loading'" class="text-gray-500">Loading...</span>
+              <span v-else-if="status === 'generating'" class="text-gray-300">Generating...</span>
+              <span v-else-if="isPlaying">Pause</span>
+              <span v-else-if="processed">Play</span>
+              <span v-else>Generate</span>
             </button>
+          </div>
 
-            <button
-              class="flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-medium bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:scale-100 disabled:opacity-50 disabled:cursor-not-allowed"
-              @click="downloadAudio"
-              :disabled="!result || status !== 'ready'"
+          <!-- Audio Player Section -->
+          <div v-if="result && status === 'ready'" class="mt-6 p-4 bg-muted/50 rounded-xl border border-border">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-medium text-foreground">Generated Audio</h3>
+              <span class="text-xs text-muted-foreground">{{ chunks.length }} chunks</span>
+            </div>
+            <audio
+              controls
+              class="w-full h-10 bg-background rounded-lg"
+              :src="audioUrl"
+              preload="metadata"
             >
-              <DownloadIcon class="w-4 h-4" />
-              Download Audio
-            </button>
+              Your browser does not support the audio element.
+            </audio>
+            <div class="mt-2 text-xs text-muted-foreground">
+              Click the play button above to listen to the generated audio
+            </div>
           </div>
 
           <!-- Hidden Audio Chunks -->
@@ -343,5 +465,48 @@ onUnmounted(() => {
           </div>
       </div>
     </main>
+
+    <!-- Footer -->
+    <footer class="container mx-auto px-4 py-8 text-center">
+      <div class="text-sm text-muted-foreground">
+        <p>
+          Powered by 
+          <a 
+            href="https://github.com/KittenML/KittenTTS" 
+            target="_blank" 
+            class="text-foreground hover:underline transition-colors"
+          >
+            KittenTTS
+          </a>
+          , 
+          <a 
+            href="https://onnxruntime.ai/" 
+            target="_blank" 
+            class="text-foreground hover:underline transition-colors"
+          >
+            ONNX Runtime Web
+          </a>
+          , and 
+          <a 
+            href="https://github.com/clowerweb/kitten-tts-web-demo" 
+            target="_blank" 
+            class="text-foreground hover:underline transition-colors"
+          >
+            kitten-tts-web-demo
+          </a>
+        </p>
+        <p class="mt-2">
+          Modified by 
+          <a 
+            href="https://tanxy.club" 
+            target="_blank" 
+            class="text-foreground hover:underline transition-colors"
+          >
+            SeanTan
+          </a>
+          <span class="text-red-500 ml-1">❤️</span>
+        </p>
+      </div>
+    </footer>
   </div>
 </template>

@@ -1,6 +1,13 @@
 <script setup>
 import { ref } from 'vue';
 
+const props = defineProps({
+  disabled: {
+    type: Boolean,
+    default: false
+  }
+});
+
 const emit = defineEmits(['sample-rate-change']);
 
 const selectedSampleRate = ref(24000);
@@ -26,7 +33,8 @@ const handleSampleRateChange = () => {
       id="sample-rate"
       v-model="selectedSampleRate"
       @change="handleSampleRateChange"
-      class="px-2 py-1 border border-gray-300 rounded bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-black"
+      :disabled="disabled"
+      class="px-2 py-1 border border-gray-300 rounded bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-black disabled:opacity-50 disabled:cursor-not-allowed"
     >
       <option v-for="rate in sampleRates" :key="rate.value" :value="rate.value">
         {{ rate.label }}

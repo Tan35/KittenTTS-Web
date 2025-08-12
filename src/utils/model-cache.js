@@ -1,131 +1,177 @@
-// Simple IndexedDB cache for model files
-class ModelCache {
-  constructor() {
-    this.dbName = 'kitten-tts-cache';
-    this.storeName = 'models';
-    this.version = 1;
-    this.db = null;
-  }
+// Model cache management utilities using Cache API
 
-  async init() {
-    if (this.db) return this.db;
+const CACHE_NAME = 'kitten-tts-models';
 
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(this.dbName, this.version);
-      
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        this.db = request.result;
-        resolve(this.db);
-      };
-
-      request.onupgradeneeded = (event) => {
-        const db = event.target.result;
-        if (!db.objectStoreNames.contains(this.storeName)) {
-          const store = db.createObjectStore(this.storeName, { keyPath: 'url' });
-          store.createIndex('timestamp', 'timestamp', { unique: false });
-        }
-      };
-    });
-  }
-
-  async get(url) {
-    await this.init();
-    
-    return new Promise((resolve, reject) => {
-      const transaction = this.db.transaction([this.storeName], 'readonly');
-      const store = transaction.objectStore(this.storeName);
-      const request = store.get(url);
-      
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const result = request.result;
-        if (result) {
-          // Check if cache is still valid (7 days)
-          const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
-          if (Date.now() - result.timestamp < maxAge) {
-            resolve(result.data);
-            return;
-          } else {
-            // Cache expired, remove it
-            this.delete(url);
-          }
-        }
-        resolve(null);
-      };
-    });
-  }
-
-  async set(url, data) {
-    await this.init();
-    
-    return new Promise((resolve, reject) => {
-      const transaction = this.db.transaction([this.storeName], 'readwrite');
-      const store = transaction.objectStore(this.storeName);
-      const request = store.put({
-        url,
-        data,
-        timestamp: Date.now()
-      });
-      
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve();
-    });
-  }
-
-  async delete(url) {
-    await this.init();
-    
-    return new Promise((resolve, reject) => {
-      const transaction = this.db.transaction([this.storeName], 'readwrite');
-      const store = transaction.objectStore(this.storeName);
-      const request = store.delete(url);
-      
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve();
-    });
-  }
-
-  async clear() {
-    await this.init();
-    
-    return new Promise((resolve, reject) => {
-      const transaction = this.db.transaction([this.storeName], 'readwrite');
-      const store = transaction.objectStore(this.storeName);
-      const request = store.clear();
-      
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve();
-    });
-  }
-}
-
-// Cached fetch function for model files
-export async function cachedFetch(url) {
-  const cache = new ModelCache();
-  
-  // Try to get from cache first
-  const cachedData = await cache.get(url);
-  if (cachedData) {
-    return new Response(cachedData);
-  }
-
-  // Fetch from network
+/**
+ * Download a file with progress tracking
+ * @param {string} url - URL to download
+ * @param {Function} onProgress - Progress callback (percent)
+ * @returns {Promise<Response>} - Response object
+ */
+export async function downloadWithProgress(url, onProgress) {
   const response = await fetch(url);
+  
   if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
+    throw new Error(`Failed to download ${url}: ${response.statusText}`);
   }
 
-  // Store in cache for next time
-  const data = await response.arrayBuffer();
-  await cache.set(url, data);
-  
-  // Return a new response with the data
-  return new Response(data, {
+  const contentLength = response.headers.get('content-length');
+  if (!contentLength) {
+    return response;
+  }
+
+  const total = parseInt(contentLength, 10);
+  let received = 0;
+
+  const reader = response.body.getReader();
+  const chunks = [];
+
+  while (true) {
+    const { done, value } = await reader.read();
+    
+    if (done) break;
+    
+    chunks.push(value);
+    received += value.length;
+    
+    if (onProgress) {
+      onProgress((received / total) * 100);
+    }
+  }
+
+  // Reconstruct the response
+  const blob = new Blob(chunks);
+  return new Response(blob, {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers
   });
 }
 
-export default ModelCache;
+/**
+ * Cache a model
+ * @param {string} modelUrl - URL of the model to cache
+ * @param {Function} onProgress - Progress callback
+ * @returns {Promise<void>}
+ */
+export async function cacheModel(modelUrl, onProgress) {
+  const cache = await caches.open(CACHE_NAME);
+  
+  try {
+    // Download and cache the main model with progress
+    console.log('Downloading model...');
+    const modelResponse = await downloadWithProgress(modelUrl, onProgress);
+    await cache.put(modelUrl, modelResponse.clone());
+    
+    console.log('Model cached successfully');
+  } catch (error) {
+    console.error('Error caching model:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get a cached model URL
+ * @param {string} modelUrl - URL of the model
+ * @returns {Promise<string|null>} - Blob URL or null if not cached
+ */
+export async function getCachedModel(modelUrl) {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const response = await cache.match(modelUrl);
+    
+    if (response) {
+      const blob = await response.blob();
+      return URL.createObjectURL(blob);
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error getting cached model:', error);
+    return null;
+  }
+}
+
+/**
+ * Check if model is cached
+ * @param {string} modelUrl - URL of the model
+ * @returns {Promise<boolean>} - True if cached
+ */
+export async function isModelCached(modelUrl) {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const response = await cache.match(modelUrl);
+    return !!response;
+  } catch (error) {
+    console.error('Error checking model cache:', error);
+    return false;
+  }
+}
+
+/**
+ * Clear all cached models
+ * @returns {Promise<void>}
+ */
+export async function clearModelCache() {
+  try {
+    await caches.delete(CACHE_NAME);
+    console.log('Model cache cleared');
+  } catch (error) {
+    console.error('Error clearing model cache:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get cache size information
+ * @returns {Promise<Object>} - Cache size info
+ */
+export async function getCacheInfo() {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const requests = await cache.keys();
+    
+    let totalSize = 0;
+    const files = [];
+    
+    for (const request of requests) {
+      const response = await cache.match(request);
+      if (response) {
+        const blob = await response.blob();
+        const size = blob.size;
+        totalSize += size;
+        
+        files.push({
+          url: request.url,
+          size: size,
+          sizeHuman: formatBytes(size)
+        });
+      }
+    }
+    
+    return {
+      totalSize,
+      totalSizeHuman: formatBytes(totalSize),
+      fileCount: files.length,
+      files
+    };
+  } catch (error) {
+    console.error('Error getting cache info:', error);
+    return { totalSize: 0, totalSizeHuman: '0 B', fileCount: 0, files: [] };
+  }
+}
+
+/**
+ * Format bytes to human readable string
+ * @param {number} bytes - Bytes to format
+ * @returns {string} - Formatted string
+ */
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}

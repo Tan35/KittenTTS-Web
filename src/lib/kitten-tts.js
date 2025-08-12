@@ -124,25 +124,50 @@ export class RawAudio {
 
 // KittenTTS class for local model
 export class KittenTTS {
-  constructor(voices, session, voiceEmbeddings) {
+  constructor(voices, session, voiceEmbeddings, tokenizerData) {
     this.voices = voices || [];
     this.session = session;
     this.voiceEmbeddings = voiceEmbeddings || {};
+    this.tokenizerData = tokenizerData;
     this.wasmSession = null; // Fallback WASM session
   }
 
   static async from_pretrained(model_path, options = {}) {
     try {
-      // Import ONNX Runtime Web and caching utility
+      // Import ONNX Runtime Web
       const ort = await import('onnxruntime-web');
-      const { cachedFetch } = await import('../utils/model-cache.js');
       
       // Use local files in public directory with threading enabled
       ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}onnx-runtime/`;
 
-      // Load model using cached fetch
-      const modelResponse = await cachedFetch(model_path);
+      // Load model from URL (could be blob URL from cache)
+      const modelResponse = await fetch(model_path);
+      if (!modelResponse.ok) {
+        throw new Error(`Failed to fetch model: ${modelResponse.statusText}`);
+      }
       const modelBuffer = await modelResponse.arrayBuffer();
+
+      // Load tokenizer data
+      let tokenizerData;
+      try {
+        const tokenizerResponse = await fetch(`${import.meta.env.BASE_URL}tts-model/tokenizer.json`);
+        if (tokenizerResponse.ok) {
+          tokenizerData = await tokenizerResponse.json();
+        }
+      } catch (error) {
+        console.warn('Could not load tokenizer.json, using fallback');
+      }
+
+      // Load voices data
+      let voicesData;
+      try {
+        const voicesResponse = await fetch(`${import.meta.env.BASE_URL}tts-model/voices.json`);
+        if (voicesResponse.ok) {
+          voicesData = await voicesResponse.json();
+        }
+      } catch (error) {
+        console.warn('Could not load voices.json, using fallback');
+      }
 
       // Try WebGPU with better configuration, fallback to WASM
       let session;
@@ -181,21 +206,25 @@ export class KittenTTS {
         });
       }
       
-      // Load voices from the local voices.json file (also cached)
-      const voicesResponse = await cachedFetch(`${import.meta.env.BASE_URL}tts-model/voices.json`);
-      const voicesData = await voicesResponse.json();
+      // Use loaded voices data or fallback to default
+      const defaultVoices = voicesData || {
+        "expr-voice-1-f": { "name": "Expressive Voice 1 Female" },
+        "expr-voice-1-m": { "name": "Expressive Voice 1 Male" },
+        "expr-voice-2-f": { "name": "Expressive Voice 2 Female" },
+        "expr-voice-2-m": { "name": "Expressive Voice 2 Male" },
+        "expr-voice-3-f": { "name": "Expressive Voice 3 Female" },
+        "expr-voice-3-m": { "name": "Expressive Voice 3 Male" },
+        "expr-voice-4-f": { "name": "Expressive Voice 4 Female" },
+        "expr-voice-4-m": { "name": "Expressive Voice 4 Male" }
+      };
       
       // Transform the voices data into the format we need
-      const voices = Object.keys(voicesData).map(key => ({
+      const voices = Object.keys(defaultVoices).map(key => ({
         id: key,
-        name: key.replace('expr-', '')
-            .replace(/-/g, ' ')
-            .replace(/\b\w/g, l => l.toUpperCase())
-            .replace('M', 'Male')
-            .replace('F', 'Female')
+        name: defaultVoices[key].name || key
       }));
       
-      return new KittenTTS(voices, session, voicesData);
+      return new KittenTTS(voices, session, defaultVoices, tokenizerData);
     } catch (error) {
       console.error('Error loading local model:', error);
       // Fallback to default voices without model
@@ -207,24 +236,49 @@ export class KittenTTS {
   async loadTokenizer() {
     if (!this.tokenizer) {
       try {
-        const { cachedFetch } = await import('../utils/model-cache.js');
-        const response = await cachedFetch(`${import.meta.env.BASE_URL}tts-model/tokenizer.json`);
-        const tokenizerData = await response.json();
-        
-        // Extract the actual vocabulary from the tokenizer
-        this.vocab = tokenizerData.model.vocab;
-        this.vocabArray = [];
-        
-        // Create reverse mapping
-        for (const [char, id] of Object.entries(this.vocab)) {
-          this.vocabArray[id] = char;
+        // Use loaded tokenizer data if available
+        if (this.tokenizerData && this.tokenizerData.model && this.tokenizerData.model.vocab) {
+          this.vocab = this.tokenizerData.model.vocab;
+          this.vocabArray = [];
+          
+          // Create reverse mapping
+          for (const [char, id] of Object.entries(this.vocab)) {
+            this.vocabArray[id] = char;
+          }
+          
+          this.tokenizer = { vocab: this.vocab };
+          console.log(`Loaded tokenizer with ${Object.keys(this.vocab).length} tokens`);
+        } else {
+          // Fallback to basic tokenizer
+          const basicVocab = {};
+          const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?:;-\'\"()[]{}$@#%^&*+=|\\/<>~`';
+          
+          // Add common phoneme characters
+          const phonemeChars = 'ɑɒɔəɛɪʊʌæɐɜɞɘɨɵɤɨɯɪʏʊeøoɑɔɒɐɛɜɞɘɨɵɤɯʉɑ̃ɛ̃ɔ̃õĩũ';
+          const allChars = chars + phonemeChars;
+          
+          for (let i = 0; i < allChars.length; i++) {
+            basicVocab[allChars[i]] = i;
+          }
+          
+          // Special tokens
+          basicVocab['$'] = 0; // Start/end token
+          
+          this.vocab = basicVocab;
+          this.vocabArray = [];
+          
+          // Create reverse mapping
+          for (const [char, id] of Object.entries(this.vocab)) {
+            this.vocabArray[id] = char;
+          }
+          
+          this.tokenizer = { vocab: basicVocab };
+          console.log('Using fallback tokenizer');
         }
-        
-        this.tokenizer = tokenizerData;
       } catch (error) {
         console.error('Error loading tokenizer:', error);
-        this.vocab = {};
-        this.vocabArray = [];
+        this.vocab = { '$': 0 };
+        this.vocabArray = ['$'];
       }
     }
   }

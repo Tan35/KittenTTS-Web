@@ -1,11 +1,12 @@
 import { KittenTTS, TextSplitterStream } from "../lib/kitten-tts.js";
 import { detectWebGPU } from "../utils/utils.js";
+import { getCachedModel } from "../utils/model-cache.js";
 
 let tts = null;
 let device = "wasm";
 
 // Initialize the model
-async function initializeModel(useWebGPU = false) {
+async function initializeModel(useWebGPU = false, modelUrl = null) {
   try {
     // Device detection
     const webGPUSupported = await detectWebGPU();
@@ -13,12 +14,27 @@ async function initializeModel(useWebGPU = false) {
     
     self.postMessage({ status: "device", device });
 
-    // Load the model
-    const model_path = `${import.meta.env.BASE_URL}tts-model/model_quantized.onnx`;
-    tts = await KittenTTS.from_pretrained(model_path, {
+    if (!modelUrl) {
+      self.postMessage({ status: "error", data: "No model URL provided" });
+      return;
+    }
+
+    // Try to get cached model first
+    const cachedModelUrl = await getCachedModel(modelUrl);
+    if (!cachedModelUrl) {
+      self.postMessage({ status: "error", data: "Model not found in cache. Please download the model first." });
+      return;
+    }
+
+    console.log('Loading model from cached URL:', cachedModelUrl);
+    
+    // Load the model from cache
+    tts = await KittenTTS.from_pretrained(cachedModelUrl, {
       dtype: "q8",
       device,
     });
+
+    console.log('Model loaded successfully, voices:', tts.voices);
     
     self.postMessage({ status: "ready", voices: tts.voices, device });
   } catch (e) {
@@ -29,11 +45,11 @@ async function initializeModel(useWebGPU = false) {
 
 // Listen for messages from the main thread
 self.addEventListener("message", async (e) => {
-  const { type, useWebGPU, text, voice, speed, sampleRate = 24000 } = e.data;
+  const { type, useWebGPU, modelUrl, text, voice, speed, sampleRate = 24000 } = e.data;
   
   // Handle initialization
   if (type === 'init') {
-    await initializeModel(useWebGPU);
+    await initializeModel(useWebGPU, modelUrl);
     return;
   }
   

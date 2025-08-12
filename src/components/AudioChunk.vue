@@ -32,7 +32,12 @@ const audioRef = ref(null);
 
 // Create URL for the audio blob
 const url = computed(() => {
-  return URL.createObjectURL(props.audio);
+  try {
+    return URL.createObjectURL(props.audio);
+  } catch (error) {
+    console.error('Failed to create object URL:', error);
+    return '';
+  }
 });
 
 const handlePause = () => {
@@ -74,7 +79,13 @@ onMounted(() => {
 
 onUnmounted(() => {
   // Revoke the object URL to free memory
-  URL.revokeObjectURL(url.value);
+  if (url.value && url.value !== '') {
+    try {
+      URL.revokeObjectURL(url.value);
+    } catch (error) {
+      console.error('Failed to revoke object URL:', error);
+    }
+  }
 });
 </script>
 
