@@ -23,6 +23,19 @@
     <meta name="description" content="Kitten TTS Nano is a lightweight (24 megabytes) text-to-speech model optimized for browser usage. It can run 100% locally in your browser, powered by Transformers.js!" />
     <meta name="keywords" content="text-to-speech, TTS, AI, machine learning, browser, local, ONNX, WebAssembly" />
     <meta name="author" content="SeanTan" />
+    
+    <!-- Error debugging for Vercel deployment -->
+    <script>
+      window.addEventListener('error', function(e) {
+        console.error('Global error:', e.error);
+        document.body.innerHTML = '<div style="padding: 20px; font-family: monospace;">Error: ' + e.message + '<br>File: ' + e.filename + '<br>Line: ' + e.lineno + '</div>';
+      });
+      
+      window.addEventListener('unhandledrejection', function(e) {
+        console.error('Unhandled rejection:', e.reason);
+        document.body.innerHTML = '<div style="padding: 20px; font-family: monospace;">Promise rejection: ' + e.reason + '</div>';
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>
