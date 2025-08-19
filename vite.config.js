@@ -6,7 +6,7 @@ import vue from "@vitejs/plugin-vue";
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/',
+  base: process.env.NODE_ENV === 'production' ? '/Kitten-tts-nano_0.1-demo/' : '/',
   plugins: [
     tailwindcss(), 
     vue(),
