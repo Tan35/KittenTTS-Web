@@ -289,6 +289,14 @@ const onErrorReceived = (e) => {
 
 // Worker setup
 onMounted(async () => {
+  // Initialize Vercel Analytics (safe way)
+  try {
+    const { inject } = await import('@vercel/analytics');
+    inject();
+  } catch (error) {
+    console.log('Analytics not loaded:', error);
+  }
+  
   // Check if model is already cached
   const isCached = await isModelCached(currentModelUrl.value);
   if (isCached) {
