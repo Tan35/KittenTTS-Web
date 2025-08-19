@@ -28,7 +28,7 @@ const handleVoiceChange = (event) => {
       :value="selectedVoice" 
       @change="handleVoiceChange"
       :disabled="disabled"
-      class="w-full p-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 appearance-none pr-8 dark:text-black disabled:opacity-50 disabled:cursor-not-allowed"
+      class="w-full p-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-gray-500 focus:border-gray-500 appearance-none pr-8 dark:text-black disabled:opacity-50 disabled:cursor-not-allowed"
     >
       <option 
         v-for="(voice, key) in voices" 

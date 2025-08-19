@@ -1,7 +1,7 @@
 <template>
   <button
     @click="toggleTheme"
-    class="p-2 rounded-full transition-all duration-300 ease-in-out bg-gray-100 hover:bg-gray-200 text-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900"
+    class="p-2 rounded-full transition-all duration-300 ease-in-out bg-gray-100 hover:bg-gray-200 text-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-offset-2 dark:focus:ring-gray-400 dark:focus:ring-offset-gray-900"
     :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
   >
     <transition name="icon-fade" mode="out-in">

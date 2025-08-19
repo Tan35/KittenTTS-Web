@@ -5,7 +5,8 @@ import {
   PlayIcon,
   CopyIcon,
   CheckIcon,
-  Heart
+  Heart,
+  DownloadIcon
 } from 'lucide-vue-next';
 import TextStatistics from './components/TextStatistics.vue';
 import VoiceSelector from './components/VoiceSelector.vue';
@@ -19,7 +20,7 @@ import { cacheModel, clearModelCache, isModelCached } from './utils/model-cache.
 
 // State variables
 const text = ref(
-    "Kitten TTS Nano is a lightweight (24 megabytes) text-to-speech model optimized for browser usage. It can run 100% locally in your browser, powered by Transformers.js!"
+    "Artificial intelligence is transforming the way we live and work. From self-driving cars to personalized medicine, AI applications are expanding rapidly. However, with great power comes great responsibility. It's important to ensure that technology benefits everyone, without creating new inequalities."
 );
 const lastGeneration = ref(null);
 const isPlaying = ref(false);
@@ -38,6 +39,9 @@ const chunks = ref([]);
 const result = ref(null);
 const currentModelUrl = ref('https://huggingface.co/KittenML/kitten-tts-nano-0.1/resolve/main/kitten_tts_nano_v0_1.onnx');
 const downloadProgress = ref(0);
+const generationProgress = ref(0);
+const generationStartTime = ref(null);
+const lastInferenceTime = ref(null);
 
 // Computed properties
 const processed = computed(() => {
@@ -195,6 +199,8 @@ const handlePlayPause = () => {
     status.value = "generating";
     chunks.value = [];
     currentChunkIndex.value = -1;  // Don't auto-play
+    generationProgress.value = 0;
+    generationStartTime.value = Date.now();
     const params = { 
       text: text.value, 
       voice: selectedVoice.value, 
@@ -221,6 +227,23 @@ const handleCopy = async () => {
   setTimeout(() => { copied.value = false }, 2000);
 }
 
+const handleDownload = () => {
+  if (!result.value) return;
+  
+  try {
+    const url = URL.createObjectURL(result.value);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kitten-tts-${Date.now()}.wav`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('Failed to download audio:', error);
+  }
+}
+
 // Worker message handlers
 const onMessageReceived = ({ data }) => {
   switch (data.status) {
@@ -242,10 +265,19 @@ const onMessageReceived = ({ data }) => {
       break;
     case "stream":
       chunks.value = [...chunks.value, data.chunk];
+      // Update generation progress based on chunks received
+      if (lastGeneration.value && text.value) {
+        const estimatedChunks = Math.max(1, Math.ceil(text.value.length / 50)); // Rough estimate
+        generationProgress.value = Math.min(90, (chunks.value.length / estimatedChunks) * 100);
+      }
       break;
     case "complete":
       status.value = "ready";
       result.value = data.audio;
+      generationProgress.value = 100;
+      if (generationStartTime.value) {
+        lastInferenceTime.value = Date.now() - generationStartTime.value;
+      }
       break;
   }
 };
@@ -292,7 +324,6 @@ onUnmounted(() => {
             <h1 class="text-xl font-bold text-foreground">
               Kitten TTS Nano Demo
             </h1>
-            <p class="text-sm text-muted-foreground hidden sm:block">Local text-to-speech in your browser</p>
           </div>
         </div>
         
@@ -386,8 +417,8 @@ onUnmounted(() => {
           <div v-else-if="error" class="p-3 bg-destructive/10 text-destructive rounded-lg text-sm">
             {{ error }}
           </div>
-          <div v-else-if="status === 'downloading'" class="flex items-center gap-2 text-blue-600">
-            <div class="animate-spin w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+          <div v-else-if="status === 'downloading'" class="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+            <div class="animate-spin w-4 h-4 border-2 border-gray-600 dark:border-gray-400 border-t-transparent rounded-full"></div>
             <span>Downloading model... {{ Math.round(downloadProgress) }}%</span>
           </div>
           <div v-else-if="status === 'loading'" class="flex items-center gap-2 text-muted-foreground">
@@ -398,8 +429,39 @@ onUnmounted(() => {
             Please download a model first to use TTS functionality.
           </div>
 
+          <!-- Generation Progress -->
+          <div v-if="status === 'generating'" class="mb-4">
+            <div class="flex justify-between items-center mb-2">
+              <span class="text-sm text-foreground">Generating speech...</span>
+              <span class="text-xs text-muted-foreground">{{ Math.round(generationProgress) }}%</span>
+            </div>
+            <div class="w-full bg-muted rounded-full h-2">
+              <div 
+                class="bg-primary h-2 rounded-full transition-all duration-300"
+                :style="{ width: generationProgress + '%' }"
+              ></div>
+            </div>
+          </div>
+
+          <!-- Inference Time Display -->
+          <div v-if="lastInferenceTime && status === 'ready'" class="mb-4 text-xs text-muted-foreground text-right">
+            Last inference: {{ lastInferenceTime }}ms ({{ (lastInferenceTime / 1000).toFixed(2) }}s)
+          </div>
+
           <!-- Action Buttons -->
           <div class="flex flex-col sm:flex-row gap-3">
+            <!-- Download Button -->
+            <button
+              v-if="result && status === 'ready'"
+              class="flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 text-white transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+              @click="handleDownload"
+              title="Download generated audio"
+            >
+              <DownloadIcon class="w-5 h-5" />
+              <span>Download</span>
+            </button>
+            
+            <!-- Play/Generate Button -->
             <button
               class="flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold text-primary-foreground transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:scale-100 disabled:opacity-50 disabled:cursor-not-allowed"
               :class="{
@@ -486,13 +548,13 @@ onUnmounted(() => {
           >
             ONNX Runtime Web
           </a>
-          , and 
+           and 
           <a 
             href="https://github.com/clowerweb/kitten-tts-web-demo" 
             target="_blank" 
             class="text-foreground hover:underline transition-colors"
           >
-            kitten-tts-web-demo
+            Kitten-tts-web-demo.
           </a>
         </p>
         <p class="mt-2">

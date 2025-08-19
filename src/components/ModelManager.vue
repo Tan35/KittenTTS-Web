@@ -51,7 +51,8 @@ const handleUrlSave = () => {
 };
 
 const isDownloading = computed(() => props.status === 'downloading');
-const isReady = computed(() => props.status === 'ready');
+const isReady = computed(() => ['ready', 'generating'].includes(props.status));
+const isLoading = computed(() => props.status === 'loading');
 </script>
 
 <template>
@@ -67,11 +68,11 @@ const isReady = computed(() => props.status === 'ready');
           <span class="text-sm">Ready</span>
         </div>
         <div 
-          v-else-if="isDownloading" 
+          v-else-if="isDownloading || isLoading" 
           class="flex items-center gap-1 text-gray-600 dark:text-gray-400"
         >
           <div class="animate-spin w-4 h-4 border-2 border-gray-600 dark:border-gray-400 border-t-transparent rounded-full"></div>
-          <span class="text-sm">Loading...</span>
+          <span class="text-sm">{{ isDownloading ? 'Downloading...' : 'Loading...' }}</span>
         </div>
         <div 
           v-else 
@@ -146,7 +147,7 @@ const isReady = computed(() => props.status === 'ready');
         v-if="isModelCached"
         @click="handleClearCache"
         :disabled="isDownloading"
-        class="flex items-center gap-2 px-4 py-2 bg-destructive text-destructive-foreground rounded-lg hover:bg-destructive/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        class="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <Trash2 class="w-4 h-4" />
         Clear Cache
