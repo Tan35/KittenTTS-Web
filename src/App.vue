@@ -16,7 +16,7 @@ import ThemeToggle from './components/ThemeToggle.vue';
 import WebGPUToggle from './components/WebGPUToggle.vue';
 import AudioChunk from './components/AudioChunk.vue';
 import ModelManager from './components/ModelManager.vue';
-import { cacheModel, clearModelCache, isModelCached } from './utils/model-cache.js';
+import { cacheModel, clearModelCache, clearSpecificModelCache, isModelCached } from './utils/model-cache.js';
 
 // State variables
 const text = ref(
@@ -31,13 +31,17 @@ const status = ref("idle"); // idle, downloading, loading, ready, generating, er
 const error = ref(null);
 const worker = ref(null);
 const voices = ref(null);
-const selectedVoice = ref("expr-voice-2-m");
+const selectedVoice = ref("Bella");
 const selectedSampleRate = ref(24000);
 const useWebGPU = ref(false);
 const actualDevice = ref("wasm");
 const chunks = ref([]);
 const result = ref(null);
-const currentModelUrl = ref('https://huggingface.co/KittenML/kitten-tts-nano-0.1/resolve/main/kitten_tts_nano_v0_1.onnx');
+const currentModelUrl = ref('https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8/resolve/main/kitten_tts_nano_v0_8.onnx');
+const currentVoicesUrl = ref('https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8/resolve/main/voices.npz');
+const currentConfigUrl = ref('https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8/resolve/main/config.json');
+const currentModelVersion = ref('nano-0.8');
+const loadedModelUrl = ref(''); // Track which model is currently loaded in the worker
 const downloadProgress = ref(0);
 const generationProgress = ref(0);
 const generationStartTime = ref(null);
@@ -100,8 +104,13 @@ const handleWebGPUToggle = (enabled) => {
   }
 };
 
-const handleDownloadModel = async (modelUrl) => {
+const handleDownloadModel = async (modelInfo) => {
   try {
+    // Support both old string format and new object format
+    const modelUrl = typeof modelInfo === 'string' ? modelInfo : modelInfo.modelUrl;
+    const voicesUrl = typeof modelInfo === 'object' ? modelInfo.voicesUrl : null;
+    const configUrl = typeof modelInfo === 'object' ? modelInfo.configUrl : null;
+    
     status.value = "downloading";
     downloadProgress.value = 0;
     error.value = null;
@@ -112,10 +121,15 @@ const handleDownloadModel = async (modelUrl) => {
     
     currentModelUrl.value = modelUrl;
     
+    // Update voices/config URLs if provided
+    if (voicesUrl) currentVoicesUrl.value = voicesUrl;
+    if (configUrl) currentConfigUrl.value = configUrl;
+    
     // Initialize the worker with the new model
     restartWorker(useWebGPU.value, modelUrl);
     
     downloadProgress.value = 100;
+    
   } catch (err) {
     console.error('Failed to download model:', err);
     status.value = "error";
@@ -123,7 +137,91 @@ const handleDownloadModel = async (modelUrl) => {
   }
 };
 
-const handleClearCache = async () => {
+const handleModelChanged = (modelInfo) => {
+  const previousVersion = currentModelVersion.value;
+  const previousModelUrl = currentModelUrl.value;
+
+  currentModelUrl.value = modelInfo.modelUrl;
+  currentVoicesUrl.value = modelInfo.voicesUrl;
+  currentConfigUrl.value = modelInfo.configUrl || null;
+  currentModelVersion.value = modelInfo.version;
+
+  // Reset the selected voice if switching between model versions
+  if (modelInfo.version !== previousVersion) {
+    // v0.8 models use display names (Bella, Jasper, etc.) as default
+    selectedVoice.value = 'Bella';
+  }
+
+  // Only proceed if we're actually switching models
+  if (previousModelUrl !== modelInfo.modelUrl) {
+    if (modelInfo.isCached) {
+      // Model is cached - restart worker with new model
+      console.log(`Switching to cached model: ${modelInfo.modelUrl}`);
+      restartWorker(useWebGPU.value, modelInfo.modelUrl);
+    } else {
+      // Model is not cached - reset to idle state and clear loaded model
+      console.log(`Switching to uncached model: ${modelInfo.modelUrl}`);
+      status.value = "idle";
+      voices.value = null;
+      chunks.value = [];
+      result.value = null;
+      lastGeneration.value = null;
+      isPlaying.value = false;
+      currentChunkIndex.value = -1;
+      loadedModelUrl.value = '';
+      
+      // Terminate current worker if exists
+      if (worker.value) {
+        worker.value.terminate();
+        worker.value = null;
+      }
+    }
+  }
+};
+
+const handleClearCache = async (modelUrl = null) => {
+  try {
+    if (modelUrl) {
+      // Clear specific model cache
+      await clearSpecificModelCache(modelUrl);
+      console.log(`Cleared cache for model: ${modelUrl}`);
+      
+      // If we cleared the currently loaded model, reset the worker
+      if (loadedModelUrl.value === modelUrl) {
+        status.value = "idle";
+        voices.value = null;
+        result.value = null;
+        chunks.value = [];
+        lastGeneration.value = null;
+        loadedModelUrl.value = '';
+        
+        if (worker.value) {
+          worker.value.terminate();
+          worker.value = null;
+        }
+      }
+    } else {
+      // Clear all model cache (fallback)
+      await clearModelCache();
+      status.value = "idle";
+      voices.value = null;
+      result.value = null;
+      chunks.value = [];
+      lastGeneration.value = null;
+      loadedModelUrl.value = '';
+      
+      if (worker.value) {
+        worker.value.terminate();
+        worker.value = null;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to clear cache:', err);
+    error.value = err.message;
+  }
+};
+
+const handleClearAllCache = async () => {
   try {
     await clearModelCache();
     status.value = "idle";
@@ -131,13 +229,16 @@ const handleClearCache = async () => {
     result.value = null;
     chunks.value = [];
     lastGeneration.value = null;
+    loadedModelUrl.value = '';
     
     if (worker.value) {
       worker.value.terminate();
       worker.value = null;
     }
+    
+    console.log('Cleared all model cache');
   } catch (err) {
-    console.error('Failed to clear cache:', err);
+    console.error('Failed to clear all cache:', err);
     error.value = err.message;
   }
 };
@@ -164,10 +265,12 @@ const restartWorker = (webGPUPreference = false, modelUrl = null) => {
   worker.value.addEventListener("error", onErrorReceived);
   
   // Always send init message with device preference and model URL
-  worker.value.postMessage({ 
-    type: 'init', 
+  worker.value.postMessage({
+    type: 'init',
     useWebGPU: webGPUPreference,
-    modelUrl: modelUrl || currentModelUrl.value
+    modelUrl: modelUrl || currentModelUrl.value,
+    voicesUrl: currentVoicesUrl.value,
+    configUrl: currentConfigUrl.value
   });
 };
 
@@ -249,13 +352,13 @@ const onMessageReceived = ({ data }) => {
   switch (data.status) {
     case "device":
       actualDevice.value = data.device;
-      // Update checkbox to reflect actual device
       useWebGPU.value = data.device === "webgpu";
       break;
     case "ready":
       status.value = "ready";
       voices.value = data.voices;
       actualDevice.value = data.device;
+      loadedModelUrl.value = currentModelUrl.value; // Track which model is loaded
       // Update checkbox to reflect actual device
       useWebGPU.value = data.device === "webgpu";
       break;
@@ -347,8 +450,12 @@ onUnmounted(() => {
       <div class="mb-6">
         <ModelManager 
           :status="status"
+          :loaded-model-url="loadedModelUrl"
+          :current-model-url="currentModelUrl"
           @download-model="handleDownloadModel"
           @clear-cache="handleClearCache"
+          @clear-all-cache="handleClearAllCache"
+          @model-changed="handleModelChanged"
         />
       </div>
 
@@ -471,11 +578,11 @@ onUnmounted(() => {
             
             <!-- Play/Generate Button -->
             <button
-              class="flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold text-primary-foreground transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:scale-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:scale-100 disabled:opacity-50 disabled:cursor-not-allowed"
               :class="{
-                'bg-primary hover:bg-primary/90 shadow-lg': !isPlaying && status === 'ready',
-                'bg-red-500 hover:bg-red-600 shadow-lg': isPlaying && status === 'ready',
-                'bg-muted/50': status !== 'ready',
+                'bg-primary hover:bg-primary/90 shadow-lg text-primary-foreground': !isPlaying && status === 'ready',
+                'bg-red-500 hover:bg-red-600 shadow-lg text-white': isPlaying && status === 'ready',
+                'bg-muted/50 text-muted-foreground': status !== 'ready',
                 'animate-pulse': status === 'generating'
               }"
               @click="handlePlayPause"
@@ -488,10 +595,10 @@ onUnmounted(() => {
               </svg>
               <PauseIcon v-else-if="isPlaying" class="w-5 h-5" />
               <PlayIcon v-else class="w-5 h-5" />
-              <span v-if="status === 'idle'" class="text-gray-500">Download Model First</span>
-              <span v-else-if="status === 'downloading'" class="text-gray-500">Downloading...</span>
-              <span v-else-if="status === 'loading'" class="text-gray-500">Loading...</span>
-              <span v-else-if="status === 'generating'" class="text-gray-300">Generating...</span>
+              <span v-if="status === 'idle'">Download Model First</span>
+              <span v-else-if="status === 'downloading'">Downloading...</span>
+              <span v-else-if="status === 'loading'">Loading...</span>
+              <span v-else-if="status === 'generating'">Generating...</span>
               <span v-else-if="isPlaying">Pause</span>
               <span v-else-if="processed">Play</span>
               <span v-else>Generate</span>

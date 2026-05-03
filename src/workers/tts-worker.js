@@ -6,12 +6,12 @@ let tts = null;
 let device = "wasm";
 
 // Initialize the model
-async function initializeModel(useWebGPU = false, modelUrl = null) {
+async function initializeModel(useWebGPU = false, modelUrl = null, voicesUrl = 'https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8/resolve/main/voices.npz', configUrl = null) {
   try {
     // Device detection
     const webGPUSupported = await detectWebGPU();
     device = (useWebGPU && webGPUSupported) ? "webgpu" : "wasm";
-    
+
     self.postMessage({ status: "device", device });
 
     if (!modelUrl) {
@@ -27,15 +27,18 @@ async function initializeModel(useWebGPU = false, modelUrl = null) {
     }
 
     console.log('Loading model from cached URL:', cachedModelUrl);
-    
-    // Load the model from cache
+    console.log('Using voices URL:', voicesUrl);
+    console.log('Using config URL:', configUrl);
+
+    // Load the model from cache with dynamic voices URL
     tts = await KittenTTS.from_pretrained(cachedModelUrl, {
-      dtype: "q8",
       device,
+      voicesUrl: voicesUrl,
+      configUrl: configUrl
     });
 
     console.log('Model loaded successfully, voices:', tts.voices);
-    
+
     self.postMessage({ status: "ready", voices: tts.voices, device });
   } catch (e) {
     console.error("Error loading model:", e);
@@ -45,30 +48,33 @@ async function initializeModel(useWebGPU = false, modelUrl = null) {
 
 // Listen for messages from the main thread
 self.addEventListener("message", async (e) => {
-  const { type, useWebGPU, modelUrl, text, voice, speed, sampleRate = 24000 } = e.data;
-  
+  const { type, useWebGPU, modelUrl, voicesUrl, configUrl, text, voice, speed, sampleRate = 24000 } = e.data;
+
   // Handle initialization
   if (type === 'init') {
-    await initializeModel(useWebGPU, modelUrl);
+    await initializeModel(useWebGPU, modelUrl, voicesUrl, configUrl);
     return;
   }
-  
+
   // Handle TTS generation
   if (!tts) {
     self.postMessage({ status: "error", data: "Model not initialized" });
     return;
   }
-  
+
   const streamer = new TextSplitterStream();
 
   streamer.push(text);
   streamer.close(); // Indicate we won't add more text
 
   const stream = tts.stream(streamer, { voice, speed });
+  console.log('Worker: Created stream, starting generation for voice:', voice);
   const chunks = [];
 
   try {
+    console.log('Worker: Starting stream iteration...');
     for await (const { text, audio } of stream) {
+      console.log('Worker: Received chunk for text:', text, 'audio length:', audio.audio.length);
       self.postMessage({
         status: "stream",
         chunk: {
@@ -78,8 +84,10 @@ self.addEventListener("message", async (e) => {
       });
       chunks.push(audio);
     }
+    console.log('Worker: Stream iteration completed, total chunks:', chunks.length);
   } catch (error) {
     console.error("Error during streaming:", error);
+    console.error("Error stack:", error.stack);
     self.postMessage({ status: "error", data: error.message });
     return;
   }
@@ -107,12 +115,11 @@ self.addEventListener("message", async (e) => {
         if (sampleRate < originalSamplingRate) {
           waveform = antiAliasFilter(waveform, originalSamplingRate, sampleRate);
         }
-        
+
         waveform = resampleLinear(waveform, originalSamplingRate, sampleRate);
       }
 
       // Create a new merged RawAudio with the target sample rate
-      // @ts-expect-error - So that we don't need to import RawAudio
       audio = new chunks[0].constructor(waveform, sampleRate);
     } catch (error) {
       console.error("Error processing audio chunks:", error);
@@ -145,20 +152,18 @@ function trimSilence(f32, thresh = 0.002, minSamples = 480) {
 }
 
 function antiAliasFilter(input, inRate, outRate) {
-  // Simple low-pass filter to prevent aliasing during downsampling
-  const cutoff = Math.min(outRate / 2, inRate / 2) * 0.9; // 90% of Nyquist frequency
+  const cutoff = Math.min(outRate / 2, inRate / 2) * 0.9;
   const nyquist = inRate / 2;
   const normalizedCutoff = cutoff / nyquist;
-  
-  // Simple IIR low-pass filter (Butterworth-like)
+
   const a = Math.exp(-2 * Math.PI * normalizedCutoff);
   const output = new Float32Array(input.length);
-  
+
   output[0] = input[0] * (1 - a);
   for (let i = 1; i < input.length; i++) {
     output[i] = input[i] * (1 - a) + output[i - 1] * a;
   }
-  
+
   return output;
 }
 
@@ -176,5 +181,3 @@ function resampleLinear(input, inRate, outRate) {
   }
   return out;
 }
-
-// Note: Initialization now handled via init message from UI

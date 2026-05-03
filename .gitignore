@@ -24,3 +24,10 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
+
+# WorkBuddy
+.workbuddy/
+
+# Reference source (not part of this project)
+kittentts-web-main/
+mualat-kittentts-web-main_2.zip

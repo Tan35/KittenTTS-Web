@@ -49,30 +49,30 @@
   --chart-5: hsl(0 0% 50%);
   --radius: 0.6rem;
   
-  /* 添加过渡时间变量 */
-  --transition-duration: 0.3s;
+  /* 更快速的过渡时间 */
+  --transition-duration: 0.15s;
 }
 
 .dark {
-  --background: hsl(0 0% 13%);
-  --foreground: hsl(0 0% 90%);
-  --card: hsl(0 0% 15%);
-  --card-foreground: hsl(0 0% 90%);
-  --popover: hsl(0 0% 15%);
-  --popover-foreground: hsl(0 0% 90%);
-  --primary: hsl(0 0% 90%);
-  --primary-foreground: hsl(0 0% 13%);
-  --secondary: hsl(0 0% 20%);
-  --secondary-foreground: hsl(0 0% 90%);
-  --muted: hsl(0 0% 18%);
-  --muted-foreground: hsl(0 0% 60%);
-  --accent: hsl(0 0% 18%);
-  --accent-foreground: hsl(0 0% 90%);
-  --destructive: hsl(0 0% 80%);
-  --destructive-foreground: hsl(0 0% 13%);
-  --border: hsl(0 0% 22%);
-  --input: hsl(0 0% 18%);
-  --ring: hsl(0 0% 80%);
+  --background: hsl(0 0% 13%);          /* #212121 */
+  --foreground: hsl(0 0% 90%);          /* #e5e5e5 */
+  --card: hsl(0 0% 15%);                /* #262626 - 与您要求的底色一致 */
+  --card-foreground: hsl(0 0% 90%);     /* #e5e5e5 */
+  --popover: hsl(0 0% 15%);             /* #262626 */
+  --popover-foreground: hsl(0 0% 90%);  /* #e5e5e5 */
+  --primary: hsl(0 0% 90%);             /* #e5e5e5 */
+  --primary-foreground: hsl(0 0% 13%);  /* #212121 */
+  --secondary: hsl(0 0% 15%);           /* #262626 - 按钮背景色与底色一致 */
+  --secondary-foreground: hsl(0 0% 90%); /* #e5e5e5 */
+  --muted: hsl(0 0% 15%);               /* #262626 - 与底色一致 */
+  --muted-foreground: hsl(0 0% 60%);    /* #999999 */
+  --accent: hsl(0 0% 18%);              /* #2e2e2e - 稍亮用于hover */
+  --accent-foreground: hsl(0 0% 90%);   /* #e5e5e5 */
+  --destructive: hsl(0 0% 80%);         /* #cccccc */
+  --destructive-foreground: hsl(0 0% 13%); /* #212121 */
+  --border: hsl(0 0% 18%);              /* #2e2e2e - 边框稍亮于底色 */
+  --input: hsl(0 0% 15%);               /* #262626 - 输入框与底色一致 */
+  --ring: hsl(0 0% 80%);                /* #cccccc */
   --chart-1: hsl(0 0% 70%);
   --chart-2: hsl(0 0% 65%);
   --chart-3: hsl(0 0% 60%);
@@ -114,13 +114,21 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
-    transition: 
-      border-color var(--transition-duration) ease, 
-      background-color var(--transition-duration) ease, 
-      color var(--transition-duration) ease, 
-      box-shadow var(--transition-duration) ease,
-      opacity var(--transition-duration) ease;
   }
+  
+  /* 只对这些关键元素应用主题切换过渡 */
+  body, 
+  .bg-background, 
+  .bg-card, 
+  .border-border,
+  .text-foreground,
+  .text-muted-foreground {
+    transition: 
+      background-color var(--transition-duration) ease,
+      border-color var(--transition-duration) ease,
+      color var(--transition-duration) ease;
+  }
+  
   body {
     @apply bg-background text-foreground;
   }
@@ -137,13 +145,5 @@
   
   html:not(.dark) {
     color-scheme: light;
-  }
-  
-  /* 特别优化卡片和边框的过渡 */
-  .bg-card, .border-border, .bg-background {
-    transition: 
-      background-color var(--transition-duration) ease,
-      border-color var(--transition-duration) ease,
-      backdrop-filter var(--transition-duration) ease;
   }
 }

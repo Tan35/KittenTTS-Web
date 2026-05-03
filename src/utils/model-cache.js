@@ -123,6 +123,26 @@ export async function clearModelCache() {
 }
 
 /**
+ * Clear cache for a specific model
+ * @param {string} modelUrl - URL of the model to remove from cache
+ * @returns {Promise<void>}
+ */
+export async function clearSpecificModelCache(modelUrl) {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const deleted = await cache.delete(modelUrl);
+    if (deleted) {
+      console.log(`Cleared cache for model: ${modelUrl}`);
+    } else {
+      console.log(`Model not found in cache: ${modelUrl}`);
+    }
+  } catch (error) {
+    console.error('Error clearing specific model cache:', error);
+    throw error;
+  }
+}
+
+/**
  * Get cache size information
  * @returns {Promise<Object>} - Cache size info
  */

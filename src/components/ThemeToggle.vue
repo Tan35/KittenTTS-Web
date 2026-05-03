@@ -1,7 +1,7 @@
 <template>
   <button
     @click="toggleTheme"
-    class="p-2 rounded-full transition-all duration-300 ease-in-out bg-gray-100 hover:bg-gray-200 text-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-offset-2 dark:focus:ring-gray-400 dark:focus:ring-offset-gray-900"
+    class="p-2 rounded-full transition-all duration-150 ease-out bg-secondary hover:bg-accent text-secondary-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
     :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
   >
     <transition name="icon-fade" mode="out-in">
@@ -22,22 +22,13 @@ const toggleTheme = () => {
 };
 
 const applyTheme = (dark) => {
-  // 添加过渡类以确保丝滑切换
-  document.documentElement.style.transition = 'background-color 0.3s ease, color 0.3s ease';
-  
-  requestAnimationFrame(() => {
-    if (dark) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-    localStorage.setItem('theme', dark ? 'dark' : 'light');
-    
-    // 切换完成后移除过渡，避免影响其他动画
-    setTimeout(() => {
-      document.documentElement.style.transition = '';
-    }, 300);
-  });
+  // 直接切换，不添加额外的过渡延迟
+  if (dark) {
+    document.documentElement.classList.add('dark');
+  } else {
+    document.documentElement.classList.remove('dark');
+  }
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
 };
 
 watch(isDark, (newValue) => {
@@ -61,16 +52,16 @@ onMounted(() => {
 <style scoped>
 .icon-fade-enter-active,
 .icon-fade-leave-active {
-  transition: all 0.3s ease-in-out;
+  transition: all 0.15s ease-out;
 }
 
 .icon-fade-enter-from {
   opacity: 0;
-  transform: rotate(-90deg) scale(0.8);
+  transform: rotate(-30deg) scale(0.9);
 }
 
 .icon-fade-leave-to {
   opacity: 0;
-  transform: rotate(90deg) scale(0.8);
+  transform: rotate(30deg) scale(0.9);
 }
 </style>
